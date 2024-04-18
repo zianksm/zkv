@@ -1,5 +1,10 @@
 [workspace]
-members = [
-    "core",
-    "cli",
-]
+members = ["core", "cli"]
+
+[workspace.dependencies]
+twox-hash = "1.6.3"
+serde = { version = "1.0.198", features = ["derive"] }
+
+xxhash-rust = { version = "0.8.5", features = ["xxh3", "const_xxh3"] }
+
+rand = "0.8.5"
