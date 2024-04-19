@@ -165,7 +165,7 @@ pub struct Partition {
 
 pub struct PartitionHandle {
     channels: PartitionChannels,
-    ops_count: Arc<AtomicUsize>,
+    write_ops_count: Arc<AtomicUsize>,
     thread_hanle: thread::JoinHandle<()>,
 }
 
@@ -178,39 +178,33 @@ impl Partition {
             ops_count: Arc::new(AtomicUsize::new(0)),
         }
     }
-    
-    pub fn increment_counter(&self) {
-        self.ops_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn get_counter(&self) -> usize {
-        self.ops_count.load(Ordering::Relaxed)
-    }
-
-    pub fn reset_counter(&self) {
-        self.ops_count.store(0, Ordering::Relaxed);
-    }
 
     pub fn run(self) -> PartitionHandle {
         let mut storage = self.storage;
         let channels = self.channels;
         let ops_count = self.ops_count;
 
-        let handle = Self::run_in_threads(channels.clone(), storage, ops_count.clone());
+        let handle = Self::run_in_threads(
+            self.controller_channel,
+            channels.clone(),
+            storage,
+            ops_count.clone()
+        );
 
         PartitionHandle {
             channels,
-            ops_count,
+            write_ops_count: ops_count,
             thread_hanle: handle,
         }
     }
 
     fn run_in_threads(
+        controller_channel: Sender<TaskResult>,
         channels: PartitionChannels,
         mut storage: PartitionStorage,
         ops_count: Arc<AtomicUsize>
     ) -> thread::JoinHandle<()> {
-        Self::monitor_ops(channels.clone(), ops_count);
+        Self::monitor_ops(ops_count.clone());
 
         thread::Builder
             ::new()
@@ -223,17 +217,16 @@ impl Partition {
                             .recv()
                     {
                         Ok(Task::Get(key)) => {
-                            // let _ = channels.stat_channel.as_ref().send(Stat::Ops(Some(1)));
-                            // let _ = channels.stat_channel.as_ref().send(Stat::Ops(None));
+                            let result = storage.get(&key);
+                            controller_channel.send(TaskResult::Get(result)).unwrap();
                         }
                         Ok(Task::Set(key, value)) => {
                             storage.set(key, &value);
-                            // let _ = channels.stat_channel.as_ref().send(Stat::Ops(Some(1)));
-                            // let _ = channels.stat_channel.as_ref().send(Stat::Ops(None));
+                            controller_channel.send(TaskResult::Set).unwrap();
+                            ops_count.fetch_add(1, Ordering::Relaxed);
                         }
                         Ok(Task::Dump) => {
-                            // let _ = channels.stat_channel.as_ref.send(Stat::Ops(Some(1)));
-                            // let _ = channels.stat_channel.as_ref().send(Stat::Ops(None));
+                            todo!();
                         }
                         Ok(Task::Stop) => {
                             break;
@@ -247,7 +240,7 @@ impl Partition {
             .unwrap()
     }
 
-    fn monitor_ops(channels: PartitionChannels, ops_count: Arc<AtomicUsize>) {
+    fn monitor_ops(ops_count: Arc<AtomicUsize>) {
         thread::Builder
             ::new()
             .name("count resetter".to_string())
@@ -257,5 +250,67 @@ impl Partition {
                     ops_count.store(0, Ordering::Relaxed);
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_partition() {
+        // Create a new Partition
+        let (controller_sender, controller_receiver) = crossbeam_channel::unbounded();
+        let partition = Partition::new(controller_sender.clone()).run();
+
+        // Test write operation
+        let key = Key::from_str("test_key").unwrap();
+        let value = "test_value".to_string();
+        partition.channels.send_task(Task::Set(key.clone(), value.clone()));
+
+        // Wait for the result
+        match controller_receiver.recv() {
+            Ok(TaskResult::Set) => (),
+            _ => panic!("Unexpected result from set operation"),
+        }
+
+        // Test read operation
+        partition.channels.send_task(Task::Get(key.clone()));
+
+        // Wait for the result
+        match controller_receiver.recv() {
+            Ok(TaskResult::Get(result)) => assert_eq!(result, Some(value.clone())),
+            _ => panic!("Unexpected result from get operation"),
+        }
+
+        // read the ops count
+        let count = partition.write_ops_count.load(Ordering::Relaxed);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_partition_alot_of_write(){
+        // Create a new Partition
+        let (controller_sender, controller_receiver) = crossbeam_channel::unbounded();
+        let partition = Partition::new(controller_sender.clone()).run();
+
+        // Test write operation
+        let key = Key::from_str("test_key").unwrap();
+        let value = "test_value".to_string();
+        for _ in 0..1000 {
+            partition.channels.send_task(Task::Set(key.clone(), value.clone()));
+        }
+
+        // Wait for the result
+        for _ in 0..1000 {
+            match controller_receiver.recv() {
+                Ok(TaskResult::Set) => (),
+                _ => panic!("Unexpected result from set operation"),
+            }
+        }
+
+        // read the ops count
+        let count = partition.write_ops_count.load(Ordering::Relaxed);
+        assert_eq!(count, 1000);
     }
 }
