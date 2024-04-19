@@ -255,7 +255,8 @@ impl Partition {
                     thread::sleep(std::time::Duration::from_secs(1));
                     ops_count.store(0, Ordering::Relaxed);
                 }
-            }).unwrap();
+            })
+            .unwrap();
     }
 }
 
@@ -295,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn test_partition_alot_of_write(){
+    fn test_partition_alot_of_write_with_delay() {
         // Create a new Partition
         let (controller_sender, controller_receiver) = crossbeam_channel::unbounded();
         let partition = Partition::new(controller_sender.clone()).run();
@@ -303,6 +304,8 @@ mod tests {
         // Test write operation
         let key = Key::from_str("test_key").unwrap();
         let value = "test_value".to_string();
+
+        // Send 1000 write operations
         for _ in 0..1000 {
             partition.channels.send_task(Task::Set(key.clone(), value.clone()));
         }
@@ -318,5 +321,29 @@ mod tests {
         // read the ops count
         let count = partition.write_ops_count.load(Ordering::Relaxed);
         assert_eq!(count, 1000);
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        // read the ops count
+        let count = partition.write_ops_count.load(Ordering::Relaxed);
+        assert_eq!(count, 0);
+
+        // retry the same test with 10000 write operations
+        // Send 10000 write operations
+        for _ in 0..10000 {
+            partition.channels.send_task(Task::Set(key.clone(), value.clone()));
+        }
+
+        // Wait for the result
+        for _ in 0..10000 {
+            match controller_receiver.recv() {
+                Ok(TaskResult::Set) => (),
+                _ => panic!("Unexpected result from set operation"),
+            }
+        }
+
+        // read the ops count
+        let count = partition.write_ops_count.load(Ordering::Relaxed);
+        assert_eq!(count, 10000);
     }
 }
