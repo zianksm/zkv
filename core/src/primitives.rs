@@ -5,7 +5,7 @@ use std::thread;
 use std::{ fmt::Debug, str::FromStr };
 use std::collections::HashMap;
 
-use crossbeam_channel::{ select, Receiver, Sender };
+use crossbeam_channel::{ Receiver, Sender };
 use serde::{ Deserialize, Serialize };
 use uuid::Uuid;
 
@@ -39,6 +39,12 @@ pub struct PartitionStorage {
     id: Uuid,
 }
 
+impl Default for PartitionStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PartitionStorage {
     pub fn new() -> Self {
         Self {
@@ -47,7 +53,7 @@ impl PartitionStorage {
         }
     }
 
-    pub fn init(path: PathBuf) -> Self {
+    pub fn init(_path: PathBuf) -> Self {
         todo!()
     }
 }
@@ -180,7 +186,7 @@ impl Partition {
     }
 
     pub fn run(self) -> PartitionHandle {
-        let mut storage = self.storage;
+        let storage = self.storage;
         let channels = self.channels;
         let ops_count = self.ops_count;
 
