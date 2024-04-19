@@ -9,4 +9,5 @@ edition = "2021"
 serde = { workspace = true }
 twox-hash = { workspace = true }
 xxhash-rust = { workspace = true }
-rand = { workspace = true }
+uuid = { workspace = true }
+crossbeam-channel = { workspace = true }
