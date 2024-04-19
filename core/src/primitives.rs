@@ -255,7 +255,7 @@ impl Partition {
                     thread::sleep(std::time::Duration::from_secs(1));
                     ops_count.store(0, Ordering::Relaxed);
                 }
-            });
+            }).unwrap();
     }
 }
 
