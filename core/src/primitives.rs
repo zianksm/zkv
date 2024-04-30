@@ -98,9 +98,9 @@ pub enum TaskResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct Channels<T> {
-    sender: Sender<T>,
-    receiver: Receiver<T>,
+pub struct Channels<T, U = T> {
+    pub(crate) sender: Sender<T>,
+    pub(crate) receiver: Receiver<U>,
 }
 
 impl<T> Default for Channels<T> {
