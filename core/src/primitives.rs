@@ -28,9 +28,10 @@ pub trait Storage {
 
     fn set(&mut self, key: Key, value: &str);
 
-    fn id(&self) -> Uuid;
+    fn id(&self) -> &Uuid;
 
-    fn dump(&self) -> String;
+    /// Dump the storage to a JSON formatted value
+    fn dump(&self) -> SerializedPartition;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,22 +40,65 @@ pub struct PartitionStorage {
     id: Uuid,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SerializedPartition {
+    id: Uuid,
+    storage: serde_json::Value,
+}
+
+impl SerializedPartition {
+    pub fn try_from_value(value: serde_json::Value) -> Option<Self> {
+        let id = value.get("id")?.as_str()?.parse().ok()?;
+
+        Some(Self {
+            id,
+            storage: value.get("storage")?.clone(),
+        })
+    }
+
+    pub fn write_to(&self, path: PathBuf) -> Result<(), std::io::Error> {
+        let serialized = serde_json
+            ::to_string_pretty(self)
+            .expect("SerializedPartition should serialize. this is a bug");
+
+        std::fs::write(path, serialized)
+    }
+}
+
 impl Default for PartitionStorage {
     fn default() -> Self {
         Self::new()
     }
 }
 
+pub enum PartitionInitError {
+    /// The file could not be opened, or invalid
+    FileError,
+    /// The file could not be parsed
+    ParseError,
+}
+
 impl PartitionStorage {
     pub fn new() -> Self {
         Self {
             storage: Default::default(),
-            id: uuid::Uuid::new_v4(),
+            id: uuid::Uuid::now_v7(),
         }
     }
 
-    pub fn init(_path: PathBuf) -> Self {
-        todo!()
+    pub fn from_file(path: PathBuf) -> Result<Self, PartitionInitError> {
+        let contents = std::fs::read_to_string(&path).map_err(|_| PartitionInitError::FileError)?;
+
+        let serialized: SerializedPartition = serde_json
+            ::from_str(&contents)
+            .map_err(|_| PartitionInitError::ParseError)?;
+
+        Ok(Self {
+            storage: serde_json
+                ::from_value(serialized.storage)
+                .expect("HashMap should deserialize. this is a bug"),
+            id: serialized.id,
+        })
     }
 }
 
@@ -67,283 +111,18 @@ impl Storage for PartitionStorage {
         self.storage.insert(key, value.to_string());
     }
 
-    fn id(&self) -> Uuid {
-        todo!()
+    fn id(&self) -> &Uuid {
+        &self.id
     }
 
-    fn dump(&self) -> String {
-        todo!()
-    }
-}
+    fn dump(&self) -> SerializedPartition {
+        let storage = serde_json
+            ::to_value(&self.storage)
+            .expect("HashMap should serialize. this is a bug");
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Stat {
-    // must be none on sending, and some on receiving
-    Ops(Option<u16>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Task {
-    Get(Key),
-    Set(Key, String),
-    Dump,
-    Stop,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TaskResult {
-    Get(Option<String>),
-    Set,
-    Dump(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct Channels<T, U = T> {
-    pub(crate) sender: Sender<T>,
-    pub(crate) receiver: Receiver<U>,
-}
-
-impl<T> Default for Channels<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> Channels<T> {
-    pub fn new() -> Self {
-        let (sender, receiver) = crossbeam_channel::unbounded();
-        Self { sender, receiver }
-    }
-}
-
-impl<T> AsRef<Sender<T>> for Channels<T> {
-    fn as_ref(&self) -> &Sender<T> {
-        &self.sender
-    }
-}
-
-impl<T> AsRef<Receiver<T>> for Channels<T> {
-    fn as_ref(&self) -> &Receiver<T> {
-        &self.receiver
-    }
-}
-
-pub trait MultiSend<T> {
-    fn send(&self, msg: T);
-}
-
-impl MultiSend<Task> for Vec<PartitionChannels> {
-    fn send(&self, msg: Task) {
-        // panic if the task is not a read ops
-        match msg {
-            Task::Get(_) => {
-                for channel in self {
-                    channel.send_task(msg.clone());
-                }
-            }
-            _ => panic!("Only read ops are allowed to be broadcasted"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct PartitionChannels {
-    task_channel: Channels<Task>,
-    stat_channel: Channels<Stat>,
-}
-
-impl PartitionChannels {
-    fn send_task(&self, task: Task) {
-        <Channels<Task> as AsRef<Sender<Task>>>::as_ref(&self.task_channel).send(task).unwrap()
-    }
-
-    fn send_stat(&self, stat: Stat) {
-        <Channels<Stat> as AsRef<Sender<Stat>>>::as_ref(&self.stat_channel).send(stat).unwrap()
-    }
-}
-
-pub struct Partition {
-    controller_channel: Sender<TaskResult>,
-    channels: PartitionChannels,
-    storage: PartitionStorage,
-    ops_count: Arc<AtomicUsize>,
-}
-
-pub struct PartitionHandle {
-    channels: PartitionChannels,
-    write_ops_count: Arc<AtomicUsize>,
-    thread_hanle: thread::JoinHandle<()>,
-}
-
-impl Partition {
-    pub fn new(controller_channel: Sender<TaskResult>) -> Self {
-        Self {
-            controller_channel,
-            channels: Default::default(),
-            storage: PartitionStorage::new(),
-            ops_count: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-
-    pub fn run(self) -> PartitionHandle {
-        let storage = self.storage;
-        let channels = self.channels;
-        let ops_count = self.ops_count;
-
-        let handle = Self::run_in_threads(
-            self.controller_channel,
-            channels.clone(),
+        SerializedPartition {
+            id: self.id,
             storage,
-            ops_count.clone()
-        );
-
-        PartitionHandle {
-            channels,
-            write_ops_count: ops_count,
-            thread_hanle: handle,
         }
-    }
-
-    fn run_in_threads(
-        controller_channel: Sender<TaskResult>,
-        channels: PartitionChannels,
-        mut storage: PartitionStorage,
-        ops_count: Arc<AtomicUsize>
-    ) -> thread::JoinHandle<()> {
-        Self::monitor_ops(ops_count.clone());
-
-        thread::Builder
-            ::new()
-            .name("partition".to_string())
-            .spawn(move || {
-                loop {
-                    match
-                        <Channels<Task> as AsRef<Receiver<Task>>>
-                            ::as_ref(&channels.task_channel)
-                            .recv()
-                    {
-                        Ok(Task::Get(key)) => {
-                            let result = storage.get(&key);
-                            controller_channel.send(TaskResult::Get(result)).unwrap();
-                        }
-                        Ok(Task::Set(key, value)) => {
-                            storage.set(key, &value);
-                            controller_channel.send(TaskResult::Set).unwrap();
-                            ops_count.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Ok(Task::Dump) => {
-                            todo!();
-                        }
-                        Ok(Task::Stop) => {
-                            break;
-                        }
-                        Err(_) => {
-                            break;
-                        }
-                    }
-                }
-            })
-            .unwrap()
-    }
-
-    fn monitor_ops(ops_count: Arc<AtomicUsize>) {
-        thread::Builder
-            ::new()
-            .name("count resetter".to_string())
-            .spawn(move || {
-                loop {
-                    thread::sleep(std::time::Duration::from_secs(1));
-                    ops_count.store(0, Ordering::Relaxed);
-                }
-            })
-            .unwrap();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_partition() {
-        // Create a new Partition
-        let (controller_sender, controller_receiver) = crossbeam_channel::unbounded();
-        let partition = Partition::new(controller_sender.clone()).run();
-
-        // Test write operation
-        let key = Key::from_str("test_key").unwrap();
-        let value = "test_value".to_string();
-        partition.channels.send_task(Task::Set(key.clone(), value.clone()));
-
-        // Wait for the result
-        match controller_receiver.recv() {
-            Ok(TaskResult::Set) => (),
-            _ => panic!("Unexpected result from set operation"),
-        }
-
-        // Test read operation
-        partition.channels.send_task(Task::Get(key.clone()));
-
-        // Wait for the result
-        match controller_receiver.recv() {
-            Ok(TaskResult::Get(result)) => assert_eq!(result, Some(value.clone())),
-            _ => panic!("Unexpected result from get operation"),
-        }
-
-        // read the ops count
-        let count = partition.write_ops_count.load(Ordering::Relaxed);
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn test_partition_alot_of_write_with_delay() {
-        // Create a new Partition
-        let (controller_sender, controller_receiver) = crossbeam_channel::unbounded();
-        let partition = Partition::new(controller_sender.clone()).run();
-
-        // Test write operation
-        let key = Key::from_str("test_key").unwrap();
-        let value = "test_value".to_string();
-
-        // Send 1000 write operations
-        for _ in 0..1000 {
-            partition.channels.send_task(Task::Set(key.clone(), value.clone()));
-        }
-
-        // Wait for the result
-        for _ in 0..1000 {
-            match controller_receiver.recv() {
-                Ok(TaskResult::Set) => (),
-                _ => panic!("Unexpected result from set operation"),
-            }
-        }
-
-        // read the ops count
-        let count = partition.write_ops_count.load(Ordering::Relaxed);
-        assert_eq!(count, 1000);
-
-        std::thread::sleep(std::time::Duration::from_secs(1));
-
-        // read the ops count
-        let count = partition.write_ops_count.load(Ordering::Relaxed);
-        assert_eq!(count, 0);
-
-        // retry the same test with 10000 write operations
-        // Send 10000 write operations
-        for _ in 0..10000 {
-            partition.channels.send_task(Task::Set(key.clone(), value.clone()));
-        }
-
-        // Wait for the result
-        for _ in 0..10000 {
-            match controller_receiver.recv() {
-                Ok(TaskResult::Set) => (),
-                _ => panic!("Unexpected result from set operation"),
-            }
-        }
-
-        // read the ops count
-        let count = partition.write_ops_count.load(Ordering::Relaxed);
-        assert_eq!(count, 10000);
     }
 }
