@@ -26,7 +26,7 @@ impl FromStr for Key {
 pub trait Storage {
     fn get(&self, key: &Key) -> Option<String>;
 
-    fn set(&mut self, key: Key, value: &str);
+    fn set(&mut self, key: Key, value: String) -> Option<String>;
 
     fn id(&self) -> &Uuid;
 
@@ -107,8 +107,8 @@ impl Storage for PartitionStorage {
         self.storage.get(key).cloned()
     }
 
-    fn set(&mut self, key: Key, value: &str) {
-        self.storage.insert(key, value.to_string());
+    fn set(&mut self, key: Key, value: String) -> Option<String> {
+        self.storage.insert(key, value)
     }
 
     fn id(&self) -> &Uuid {

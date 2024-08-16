@@ -12,3 +12,4 @@ xxhash-rust = { workspace = true }
 uuid = { workspace = true }
 crossbeam-channel = { workspace = true }
 serde_json = { workspace = true }
+log = { workspace = true }
