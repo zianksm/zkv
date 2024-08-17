@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 pub const KEY_LENGTH: usize = 32;
 
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Key(u128);
 
@@ -23,34 +24,43 @@ impl FromStr for Key {
     }
 }
 
-pub trait Storage {
-    fn get(&self, key: &Key) -> Option<String>;
+pub type Value = Vec<u8>;
 
-    fn set(&mut self, key: Key, value: String) -> Option<String>;
+
+pub trait Storage {
+    fn label(&self) -> &str;
+
+    fn get(&self, key: &Key) -> Option<Value>;
+
+    fn set(&mut self, key: Key, value: Value) -> Option<Value>;
 
     fn id(&self) -> &Uuid;
 
     /// Dump the storage to a JSON formatted value
-    fn dump(&self) -> SerializedPartition;
+    fn dump(&self) -> SerializedBucket;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartitionStorage {
-    storage: HashMap<Key, String, twox_hash::RandomXxHashBuilder64>,
+pub struct Bucket {
+    label: String,
+    storage: HashMap<Key, Value, twox_hash::RandomXxHashBuilder64>,
     id: Uuid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SerializedPartition {
+pub struct SerializedBucket {
+    label: String,
     id: Uuid,
     storage: serde_json::Value,
 }
 
-impl SerializedPartition {
+impl SerializedBucket {
     pub fn try_from_value(value: serde_json::Value) -> Option<Self> {
         let id = value.get("id")?.as_str()?.parse().ok()?;
+        let label = value.get("label")?.as_str()?.to_string();
 
         Some(Self {
+            label,
             id,
             storage: value.get("storage")?.clone(),
         })
@@ -65,9 +75,9 @@ impl SerializedPartition {
     }
 }
 
-impl Default for PartitionStorage {
+impl Default for Bucket {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -78,9 +88,10 @@ pub enum PartitionInitError {
     ParseError,
 }
 
-impl PartitionStorage {
-    pub fn new() -> Self {
+impl Bucket {
+    pub fn new(label: Option<String>) -> Self {
         Self {
+            label: label.unwrap_or_else(|| "default".to_string()),
             storage: Default::default(),
             id: uuid::Uuid::now_v7(),
         }
@@ -89,11 +100,12 @@ impl PartitionStorage {
     pub fn from_file(path: PathBuf) -> Result<Self, PartitionInitError> {
         let contents = std::fs::read_to_string(&path).map_err(|_| PartitionInitError::FileError)?;
 
-        let serialized: SerializedPartition = serde_json
+        let serialized: SerializedBucket = serde_json
             ::from_str(&contents)
             .map_err(|_| PartitionInitError::ParseError)?;
 
         Ok(Self {
+            label: serialized.label,
             storage: serde_json
                 ::from_value(serialized.storage)
                 .expect("HashMap should deserialize. this is a bug"),
@@ -102,12 +114,12 @@ impl PartitionStorage {
     }
 }
 
-impl Storage for PartitionStorage {
-    fn get(&self, key: &Key) -> Option<String> {
+impl Storage for Bucket {
+    fn get(&self, key: &Key) -> Option<Value> {
         self.storage.get(key).cloned()
     }
 
-    fn set(&mut self, key: Key, value: String) -> Option<String> {
+    fn set(&mut self, key: Key, value: Value) -> Option<Value> {
         self.storage.insert(key, value)
     }
 
@@ -115,14 +127,19 @@ impl Storage for PartitionStorage {
         &self.id
     }
 
-    fn dump(&self) -> SerializedPartition {
+    fn dump(&self) -> SerializedBucket {
         let storage = serde_json
             ::to_value(&self.storage)
             .expect("HashMap should serialize. this is a bug");
 
-        SerializedPartition {
+        SerializedBucket {
+            label: self.label.clone(),
             id: self.id,
             storage,
         }
+    }
+
+    fn label(&self) -> &str {
+        &self.label
     }
 }
